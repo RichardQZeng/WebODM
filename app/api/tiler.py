@@ -11,9 +11,9 @@ from django.http import HttpResponse
 from rio_tiler.errors import TileOutsideBounds
 from rio_tiler.utils import has_alpha_band, \
     non_alpha_indexes, render, create_cutline
-from rio_tiler.utils import _stats as raster_stats
-from rio_tiler.models import ImageStatistics, ImageData
-from rio_tiler.models import Metadata as RioMetadata
+from rio_tiler.utils import get_array_statistics as raster_stats
+from rio_tiler.models import BandStatistics, ImageData
+from rio_tiler.models import ImageData as RioMetadata
 from rio_tiler.profiles import img_profiles
 from rio_tiler.colormap import cmap as colormap, apply_cmap
 from rio_tiler.io import COGReader
@@ -190,7 +190,7 @@ class Metadata(TaskNestedView):
                         str(b + 1): raster_stats(data[b], percentiles=(pmin, pmax), bins=255, range=hrange)
                         for b in range(data.shape[0])
                     }
-                    stats = {b: ImageStatistics(**s) for b, s in stats.items()}
+                    stats = {b: BandStatistics(**s) for b, s in stats.items()}
                     metadata = RioMetadata(statistics=stats, **src.info().dict())
                 else:
                     if (boundaries_cutline is not None) and (boundaries_bbox is not None):

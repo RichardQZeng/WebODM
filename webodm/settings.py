@@ -20,6 +20,14 @@ from django.contrib.messages import constants as messages
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# use this if setting up on Windows 10 with GDAL installed from OSGeo4W using defaults
+if os.name == 'nt':
+    # VIRTUAL_ENV_BASE = os.environ['VIRTUAL_ENV']
+    VIRTUAL_ENV_BASE = os.environ['CONDA_PREFIX']
+    os.environ['PATH'] = os.path.join(VIRTUAL_ENV_BASE, r'Lib\site-packages\osgeo') + ';' + os.environ['PATH']
+    os.environ['GDAL_DATA'] = os.path.join(VIRTUAL_ENV_BASE, r'Library\share\gdal')
+    os.environ['PROJ_LIB'] = os.path.join(VIRTUAL_ENV_BASE, r'Library\share\proj')
+    os.environ['PROJ_DATA'] = os.environ['PROJ_LIB']
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/1.10/howto/deployment/checklist/
@@ -107,7 +115,9 @@ INSTALLED_APPS = [
     'django_filters',
     'guardian',
     'rest_framework',
-    'rest_framework_nested',
+    'rest_framework_jwt',
+    'rest_framework_jwt.blacklist',
+    # 'rest_framework_simplejwt',
     'drf_yasg',
     'webpack_loader',
     'corsheaders',
@@ -143,7 +153,7 @@ DATABASES = {
         'NAME': os.environ.get('WO_DATABASE_NAME', 'webodm_dev'),
         'USER': os.environ.get('WO_DATABASE_USER', 'postgres'),
         'PASSWORD': os.environ.get('WO_DATABASE_PASSWORD', 'postgres'),
-        'HOST': os.environ.get('WO_DATABASE_HOST', 'db'),
+        'HOST': os.environ.get('WO_DATABASE_HOST', 'localhost'),
         'PORT': os.environ.get('WO_DATABASE_PORT', '5432'),
     }
 }
