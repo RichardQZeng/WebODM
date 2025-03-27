@@ -13,6 +13,7 @@ from app.plugins.signals import task_completed
 from app.tests.classes import BootTransactionTestCase
 from app.models import Project, Task
 from nodeodm.models import ProcessingNode
+from guardian.shortcuts import assign_perm
 from nodeodm import status_codes
 
 import worker
@@ -58,7 +59,9 @@ class TestApiTask(BootTransactionTestCase):
 
             # Create processing node
             pnode = ProcessingNode.objects.create(hostname="localhost", port=11223)
-
+            assign_perm('view_processingnode', user, pnode)
+            assign_perm('view_processingnode', other_user, pnode)
+            
             # task creation via file upload
             image1 = open("app/fixtures/tiny_drone_image.jpg", 'rb')
             image2 = open("app/fixtures/tiny_drone_image_2.jpg", 'rb')
@@ -82,7 +85,8 @@ class TestApiTask(BootTransactionTestCase):
                 ('orthophoto', {'formula': 'NDVI', 'bands': 'RGN'}, status.HTTP_200_OK),
                 ('dsm', {'epsg': 4326}, status.HTTP_200_OK),
                 ('dtm', {'epsg': 4326}, status.HTTP_200_OK),
-                ('georeferenced_model', {'epsg': 4326}, status.HTTP_200_OK)
+                ('georeferenced_model', {'epsg': 4326}, status.HTTP_200_OK),
+                ('georeferenced_model', {'epsg': 4326, 'resample': 2.5}, status.HTTP_200_OK)
             ]
 
             # Cannot export stuff

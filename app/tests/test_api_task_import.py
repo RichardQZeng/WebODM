@@ -40,6 +40,7 @@ class TestApiTask(BootTransactionTestCase):
 
             # Create processing node
             pnode = ProcessingNode.objects.create(hostname="localhost", port=11223)
+            assign_perm('view_processingnode', user, pnode)
             client.login(username="testuser", password="test1234")
 
             # Create task
@@ -233,6 +234,8 @@ class TestApiTask(BootTransactionTestCase):
 
             # Create processing node
             pnode = ProcessingNode.objects.create(hostname="localhost", port=11223)
+            assign_perm('view_processingnode', user, pnode)
+
             client.login(username="testuser", password="test1234")
 
             # Create task
@@ -294,7 +297,7 @@ class TestApiTask(BootTransactionTestCase):
                 c += 1
                 time.sleep(1)
 
-            self.assertEqual(file_import_task.import_url, "file://all.zip")
+            self.assertEqual(file_import_task.import_url, "")
             self.assertEqual(file_import_task.images_count, 1)
             self.assertEqual(file_import_task.processing_node, None)
             self.assertEqual(file_import_task.auto_processing_node, False)

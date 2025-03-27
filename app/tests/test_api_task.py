@@ -14,6 +14,7 @@ from PIL import Image
 from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.test import APIClient
+from django.contrib.gis.geos import Polygon
 
 import worker
 from django.utils import timezone
@@ -28,6 +29,7 @@ from app.plugins.signals import task_completed, task_removed, task_removing
 from app.tests.classes import BootTransactionTestCase
 from nodeodm import status_codes
 from nodeodm.models import ProcessingNode
+from guardian.shortcuts import assign_perm
 from app.testwatch import testWatch
 from .utils import start_processing_node, clear_test_media_root, catch_signal
 
@@ -70,7 +72,9 @@ class TestApiTask(BootTransactionTestCase):
 
             # Create processing node
             pnode = ProcessingNode.objects.create(hostname="localhost", port=11223)
-
+            assign_perm('view_processingnode', user, pnode)
+            assign_perm('view_processingnode', other_user, pnode)
+            
             # Verify that it's working
             self.assertTrue(pnode.api_version is not None)
 
@@ -237,6 +241,9 @@ class TestApiTask(BootTransactionTestCase):
             # Can_rerun_from should be an empty list
             self.assertTrue(len(res.data['can_rerun_from']) == 0)
 
+            # Extent should be null
+            self.assertTrue(res.data['extent'] is None)
+
             # processing_node_name should be null
             self.assertTrue(res.data['processing_node_name'] is None)
 
@@ -294,8 +301,16 @@ class TestApiTask(BootTransactionTestCase):
             res = client.get("/api/projects/{}/tasks/{}/images/download/tiny_drone_image.jpg".format(other_project.id, other_task.id))
             self.assertTrue(res.status_code == status.HTTP_404_NOT_FOUND)
 
+            # Cannot get thumbnail for task we have no access to
+            res = client.get("/api/projects/{}/tasks/{}/thumbnail".format(other_project.id, other_task.id))
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
             # Cannot duplicate a task we have no access to
             res = client.post("/api/projects/{}/tasks/{}/duplicate/".format(other_project.id, other_task.id))
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+            # Cannot get thumbnail for task that is not processed
+            res = client.get("/api/projects/{}/tasks/{}/thumbnail".format(project.id, task.id))
             self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
             # Cannot export orthophoto
@@ -361,6 +376,14 @@ class TestApiTask(BootTransactionTestCase):
 
             # processing_node_name should be the name of the pnode
             self.assertEqual(res.data['processing_node_name'], str(pnode))
+
+            # extent should be populated
+            self.assertEqual(len(res.data['extent']), 4)
+            self.assertTrue(isinstance(res.data['extent'][0], float))
+
+            # Can get thumbnail
+            res = client.get("/api/projects/{}/tasks/{}/thumbnail".format(project.id, task.id))
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
 
             # Can download assets
             for asset in list(task.ASSETS_MAP.keys()):
@@ -434,6 +457,36 @@ class TestApiTask(BootTransactionTestCase):
                 # Thumbnail has been resized to the max allowed (oringinal image size)
                 self.assertEqual(i.width, 48)
                 self.assertEqual(i.height, 36)
+
+            # Can access task thumbnails
+            res = client.get("/api/projects/{}/tasks/{}/thumbnail?size=128".format(project.id, task.id))
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            with Image.open(io.BytesIO(res.content)) as i:
+                # Thumbnail has requested size
+                self.assertEqual(i.width, 128)
+                self.assertEqual(i.height, 128)
+
+                # Should be PNG
+                self.assertEqual(i.format, "PNG")
+            
+            # Can make a bad thumbnail size request
+            res = client.get("/api/projects/{}/tasks/{}/thumbnail?size=abc".format(project.id, task.id))
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            with Image.open(io.BytesIO(res.content)) as i:
+                # Thumbnail has default size
+                self.assertEqual(i.width, 256)
+                self.assertEqual(i.height, 256)
+
+            # Can get webp thumbnails, use out of bounds size parameter
+            res = client.get("/api/projects/{}/tasks/{}/thumbnail?size=-5".format(project.id, task.id), HTTP_ACCEPT="image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            with Image.open(io.BytesIO(res.content)) as i:
+                # Thumbnail has size 1 due to out of bounds value
+                self.assertEqual(i.width, 1)
+                self.assertEqual(i.height, 1)
+
+                # Should be WEBP
+                self.assertEqual(i.format, "WEBP")
 
             # Can download images
             res = client.get("/api/projects/{}/tasks/{}/images/download/tiny_drone_image.jpg".format(project.id, task.id))
@@ -766,6 +819,49 @@ class TestApiTask(BootTransactionTestCase):
             res = other_client.post("/api/projects/{}/tasks/{}/3d/scene".format(project.id, task.id), json.dumps({ "type": "Potree", "modified": True }), content_type="application/json")
             self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
+            # Original owner enables edits
+            res = client.patch("/api/projects/{}/tasks/{}/".format(project.id, task.id), {
+                'public': True,
+                'public_edit': True
+            })
+            self.assertTrue(res.status_code == status.HTTP_200_OK)
+            
+            # He can now save scene / change camera view
+            res = other_client.post("/api/projects/{}/tasks/{}/3d/cameraview".format(project.id, task.id), json.dumps({ "position": [0,0,0], "target": [0,0,0] }), content_type="application/json")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            res = other_client.post("/api/projects/{}/tasks/{}/3d/scene".format(project.id, task.id), json.dumps({ "type": "Potree", "modified": True }), content_type="application/json")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+            # Revert edit
+            res = client.patch("/api/projects/{}/tasks/{}/".format(project.id, task.id), {
+                'public': False,
+                'public_edit': False
+            })
+            
+            # Cannot save again
+            res = other_client.post("/api/projects/{}/tasks/{}/3d/cameraview".format(project.id, task.id), json.dumps({ "position": [0,0,0], "target": [0,0,0] }), content_type="application/json")
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+            
+            # Cannot access project information via project id (which could be enumerated)
+            res = other_client.get("/api/projects/{}/".format(project.id))
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+            
+            # Share entire project
+            res = client.patch("/api/projects/{}/".format(project.id), {
+                'public': True,
+                'public_edit': True
+            })
+
+            # Still cannot access project information via project id (which could be enumerated)
+            res = other_client.get("/api/projects/{}/".format(project.id))
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+            
+            # Can now save since it's shared/editable project-wise
+            res = other_client.post("/api/projects/{}/tasks/{}/3d/cameraview".format(project.id, task.id), json.dumps({ "position": [0,0,0], "target": [0,0,0] }), content_type="application/json")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            res = other_client.post("/api/projects/{}/tasks/{}/3d/scene".format(project.id, task.id), json.dumps({ "type": "Potree", "modified": True }), content_type="application/json")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+
             # User logs out
             other_client.logout()
 
@@ -900,7 +996,6 @@ class TestApiTask(BootTransactionTestCase):
             task.refresh_from_db()
             self.assertTrue(task.last_error is None)
 
-
             # Reassigning the task to another project should move its assets
             self.assertTrue(os.path.exists(full_task_directory_path(task.id, project.id)))
             self.assertTrue(len(task.scan_images()) == 2)
@@ -910,6 +1005,23 @@ class TestApiTask(BootTransactionTestCase):
             task.refresh_from_db()
             self.assertFalse(os.path.exists(full_task_directory_path(task.id, project.id)))
             self.assertTrue(os.path.exists(full_task_directory_path(task.id, other_project.id)))
+
+            # Move back
+            task.project = project
+            task.save()
+            task.refresh_from_db()
+
+            # Compacting the task should remove the images
+            # but not the assets
+            self.assertTrue(len(os.listdir(task.assets_path())) > 0)
+            self.assertEqual(len(task.scan_images()), 2)
+
+            res = client.post("/api/projects/{}/tasks/{}/compact/".format(project.id, task.id))
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            task.refresh_from_db()
+
+            self.assertTrue(len(os.listdir(task.assets_path())) > 0)
+            self.assertEqual(len(task.scan_images()), 0)            
 
         # Restart node-odm as to not generate orthophotos
         testWatch.clear()
@@ -963,6 +1075,9 @@ class TestApiTask(BootTransactionTestCase):
             self.assertFalse('orthophoto_tiles.zip' in res.data['available_assets'])
             self.assertTrue('textured_model.zip' in res.data['available_assets'])
 
+            # Extent should be set
+            self.assertTrue(len(res.data['extent']), 4)
+
         # Can duplicate a task
         res = client.post("/api/projects/{}/tasks/{}/duplicate/".format(project.id, task.id))
         self.assertTrue(res.status_code, status.HTTP_200_OK)
@@ -979,6 +1094,29 @@ class TestApiTask(BootTransactionTestCase):
         # Directories have been created
         self.assertTrue(os.path.exists(new_task.task_path()))
 
+        # Can create task with align_to parameter
+        res = client.post("/api/projects/{}/tasks/".format(project.id), {
+            'images': [image1, image2],
+            'name': 'test_align_task',
+            'processing_node': pnode.id,
+            'align_to': new_task.id
+        }, format="multipart")
+        self.assertTrue(res.status_code == status.HTTP_201_CREATED)
+        align_task = Task.objects.latest('created_at')
+
+        # Has alignment file
+        self.assertTrue(os.path.isfile(align_task.task_path("align.laz")))
+
+        # Alignment file is same as point cloud from align task
+        with open(align_task.task_path("align.laz"), "rb") as f1, open(new_task.assets_path(new_task.ASSETS_MAP['georeferenced_model.laz']), "rb") as f2:
+            self.assertEqual(f1.read(), f2.read())
+        
+        # Images are 2 + 1 (alignment file)
+        self.assertEqual(align_task.images_count, 3)
+
+        image1.seek(0)
+        image2.seek(0)
+
         image1.close()
         image2.close()
         multispec_image.close()
@@ -989,6 +1127,8 @@ class TestApiTask(BootTransactionTestCase):
         task = Task.objects.create(project=project, name="Test")
         pnode = ProcessingNode.objects.create(hostname="invalid-host", port=11223)
         another_pnode = ProcessingNode.objects.create(hostname="invalid-host-2", port=11223)
+        assign_perm('view_processingnode', project.owner, pnode)
+        assign_perm('view_processingnode', project.owner, another_pnode)
 
         # By default
         self.assertTrue(task.auto_processing_node)
@@ -1073,6 +1213,8 @@ class TestApiTask(BootTransactionTestCase):
 
         # Bring a processing node online
         pnode = ProcessingNode.objects.create(hostname="invalid-host", port=11223)
+        assign_perm('view_processingnode', user, pnode)
+
         pnode.last_refreshed = timezone.now()
         pnode.save()
         self.assertTrue(pnode.is_online())
@@ -1097,7 +1239,8 @@ class TestApiTask(BootTransactionTestCase):
             )
 
             pnode = ProcessingNode.objects.create(hostname="localhost", port=11223)
-
+            assign_perm('view_processingnode', user, pnode)
+            
             # task creation via chunked upload
             image1 = open("app/fixtures/tiny_drone_image.jpg", 'rb')
             image2 = open("app/fixtures/tiny_drone_image_2.jpg", 'rb')
@@ -1177,3 +1320,56 @@ class TestApiTask(BootTransactionTestCase):
 
             image1.close()
             image2.close()
+
+
+    def test_task_list(self):
+        user = User.objects.get(username="testuser")
+        project = Project.objects.create(name="User Test Project", owner=user)
+        task_completed = Task.objects.create(project=project, name="Test Success", 
+                                        status=status_codes.COMPLETED,
+                                        available_assets=["dsm.tif", "georeferenced_model.laz"],
+                                        dsm_extent=Polygon.from_bbox([-82.8325,27.9578,-82.8310,27.9593]))
+        task_fail = Task.objects.create(project=project, name="Test Fail", 
+                                        status=status_codes.FAILED,
+                                        available_assets=["orthophoto.tif", "georeferenced_model.laz"],
+                                        orthophoto_extent=Polygon.from_bbox([-82.8325,27.9578,-82.8310,27.9593]))
+        client = APIClient()
+        client.login(username="testuser", password="test1234")
+
+        other_client = APIClient()
+        other_client.login(username="testuser2", password="test1234")
+
+        # Cannot list another user's tasks
+        res = other_client.get("/api/projects/{}/tasks/".format(project.id))
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Can list tasks
+        res = client.get("/api/projects/{}/tasks/".format(project.id))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+
+        # Can filter tasks by status
+        res = client.get("/api/projects/{}/tasks/?status={}".format(project.id, status_codes.COMPLETED))
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['id'], str(task_completed.id))
+
+        # Can filter tasks by available_assets
+        res = client.get("/api/projects/{}/tasks/?available_assets=georeferenced_model.laz,dsm.tif".format(project.id))
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['id'], str(task_completed.id))
+
+        res = client.get("/api/projects/{}/tasks/?available_assets=orthophoto.tif".format(project.id))
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['id'], str(task_fail.id))
+
+        # Can filter by bounding box intersection
+        res = client.get("/api/projects/{}/tasks/?bbox=-82.8320,27.9588,-82.8310,27.9593".format(project.id))
+        self.assertEqual(len(res.data), 2)
+
+        res = client.get("/api/projects/{}/tasks/?bbox=-82.8420,27.9688,-82.8410,27.9693".format(project.id))
+        self.assertEqual(len(res.data), 0)
+
+        # Cannot filter with invalid bounding box format
+        res = client.get("/api/projects/{}/tasks/?bbox=bad".format(project.id))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+

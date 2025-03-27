@@ -3,7 +3,7 @@ from django.urls import re_path, include
 from app.api.presets import PresetViewSet
 from app.plugins.views import api_view_handler
 from .projects import ProjectViewSet
-from .tasks import TaskViewSet, TaskDownloads, TaskAssets, TaskBackup, TaskAssetsImport
+from .tasks import TaskViewSet, TaskDownloads, TaskThumbnail, TaskAssets, TaskBackup, TaskAssetsImport
 from .imageuploads import Thumbnail, ImageDownload
 from .processingnodes import ProcessingNodeViewSet, ProcessingNodeOptionsView
 from .admin import AdminUserViewSet, AdminGroupViewSet, AdminProfileViewSet

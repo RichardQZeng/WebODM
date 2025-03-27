@@ -5,7 +5,7 @@ import time
 import struct
 from datetime import datetime
 import uuid as uuid_module
-from app.vendor import zipfly
+from zipstream.ng import ZipStream
 
 import json
 from shlex import quote
@@ -19,6 +19,7 @@ import rasterio
 from shutil import copyfile
 import requests
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = 4096000000
 from django.contrib.gis.gdal import GDALRaster
 from django.contrib.gis.gdal import OGRGeometry
 from django.contrib.gis.geos import GEOSGeometry
@@ -159,7 +160,7 @@ def resize_image(image_path, resize_to, done=None):
         os.rename(resized_image_path, image_path)
 
         logger.info("Resized {} to {}x{}".format(image_path, resized_width, resized_height))
-    except (IOError, ValueError, struct.error) as e:
+    except (IOError, ValueError, struct.error, Image.DecompressionBombError) as e:
         logger.warning("Cannot resize {}: {}.".format(image_path, str(e)))
         if done is not None:
             done()
@@ -234,6 +235,7 @@ class Task(models.Model):
         (pending_actions.RESTART, 'RESTART'),
         (pending_actions.RESIZE, 'RESIZE'),
         (pending_actions.IMPORT, 'IMPORT'),
+        (pending_actions.COMPACT, 'COMPACT'),
     )
 
     TASK_PROGRESS_LAST_VALUE = 0.85
@@ -260,6 +262,8 @@ class Task(models.Model):
     pending_action = models.IntegerField(choices=PENDING_ACTIONS, db_index=True, null=True, blank=True, help_text=_("A requested action to be performed on the task. The selected action will be performed by the worker at the next iteration."), verbose_name=_("Pending Action"))
 
     public = models.BooleanField(default=False, help_text=_("A flag indicating whether this task is available to the public"), verbose_name=_("Public"))
+    public_edit = models.BooleanField(default=False, help_text=_("A flag indicating whether this public task can be edited"), verbose_name=_("Public Edit"))
+
     resize_to = models.IntegerField(default=-1, help_text=_("When set to a value different than -1, indicates that the images for this task have been / will be resized to the size specified here before processing."), verbose_name=_("Resize To"))
 
     upload_progress = models.FloatField(default=0.0,
@@ -282,6 +286,8 @@ class Task(models.Model):
     tags = models.TextField(db_index=True, default="", blank=True, help_text=_("Task tags"), verbose_name=_("Tags"))
     orthophoto_bands = models.JSONField(default=list, blank=True, help_text=_("List of orthophoto bands"), verbose_name=_("Orthophoto Bands"))
     size = models.FloatField(default=0.0, blank=True, help_text=_("Size of the task on disk in megabytes"), verbose_name=_("Size"))
+    compacted = models.BooleanField(default=False, help_text=_("A flag indicating whether this task was compacted"), verbose_name=_("Compact"))
+    
     
     class Meta:
         verbose_name = _("Task")
@@ -408,7 +414,15 @@ class Task(models.Model):
                 points = j.get('point_cloud_statistics', {}).get('stats', {}).get('statistic', [{}])[0].get('count')
             else:
                 points = j.get('reconstruction_statistics', {}).get('reconstructed_points_count')
-                        
+
+            spatial_refs = []
+            if j.get('reconstruction_statistics', {}).get('has_gps'):
+                spatial_refs.append("gps")
+            if j.get('reconstruction_statistics', {}).get('has_gcp') and 'average_error' in j.get('gcp_errors', {}):
+                spatial_refs.append("gcp")
+            if 'align' in j:
+                spatial_refs.append("alignment")
+
             return {
                 'pointcloud':{
                     'points': points,
@@ -417,6 +431,7 @@ class Task(models.Model):
                 'area': j.get('processing_statistics', {}).get('area'),
                 'start_date': j.get('processing_statistics', {}).get('start_date'),
                 'end_date': j.get('processing_statistics', {}).get('end_date'),
+                'spatial_refs': spatial_refs,
             }
         else:
             return {}
@@ -438,6 +453,9 @@ class Task(models.Model):
                     try:
                         # Try to use hard links first
                         shutil.copytree(self.task_path(), task.task_path(), copy_function=os.link)
+
+                        # Make sure the console output is not linked to the original task
+                        task.console.delink()
                     except Exception as e:
                         logger.warning("Cannot duplicate task using hard links, will use normal copy instead: {}".format(str(e)))
                         shutil.copytree(self.task_path(), task.task_path())
@@ -493,9 +511,7 @@ class Task(models.Model):
         self.write_backup_file()
         zip_dir = self.task_path("")
         paths = [{'n': os.path.relpath(os.path.join(dp, f), zip_dir), 'fs': os.path.join(dp, f)} for dp, dn, filenames in os.walk(zip_dir) for f in filenames]
-        if len(paths) == 0:
-            raise FileNotFoundError("No files available for export")
-        return zipfly.ZipStream(paths)
+        return self.zip_stream(paths)
     
     def get_asset_file_or_stream(self, asset):
         """
@@ -514,15 +530,25 @@ class Task(models.Model):
                     paths = [{'n': os.path.relpath(os.path.join(dp, f), zip_dir), 'fs': os.path.join(dp, f)} for dp, dn, filenames in os.walk(zip_dir) for f in filenames]
                     if 'deferred_exclude_files' in value and isinstance(value['deferred_exclude_files'], tuple):
                         paths = [p for p in paths if os.path.basename(p['fs']) not in value['deferred_exclude_files']]
-                    if len(paths) == 0:
-                        raise FileNotFoundError("No files available for download")
-                    return zipfly.ZipStream(paths)
+                    
+                    return self.zip_stream(paths)
                 else:
                     raise FileNotFoundError("{} is not a valid asset (invalid dict values)".format(asset))
             else:
                 raise FileNotFoundError("{} is not a valid asset (invalid map)".format(asset))
         else:
             raise FileNotFoundError("{} is not a valid asset".format(asset))
+
+    def zip_stream(self, paths):
+        if len(paths) == 0:
+            raise FileNotFoundError("No files available for download")
+
+        zs = ZipStream(sized=True)
+        zs.comment = "Generated by WebODM"
+        for p in paths:
+            zs.add_path(p['fs'], p['n'])
+        
+        return zs
 
     def get_asset_download_path(self, asset):
         """
@@ -590,7 +616,7 @@ class Task(models.Model):
 
                             fd.write(chunk)
 
-                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, ReadTimeoutError) as e:
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, ReadTimeoutError, requests.exceptions.MissingSchema) as e:
                     raise NodeServerError(e)
 
         self.refresh_from_db()
@@ -599,7 +625,9 @@ class Task(models.Model):
             self.extract_assets_and_complete()
         except zipfile.BadZipFile:
             raise NodeServerError(gettext("Invalid zip file"))
-
+        except NotImplementedError:
+            raise NodeServerError(gettext("Unsupported compression method"))
+        
         images_json = self.assets_path("images.json")
         if os.path.exists(images_json):
             try:
@@ -636,7 +664,7 @@ class Task(models.Model):
                 # No processing node assigned and need to auto assign
                 if self.processing_node is None:
                     # Assign first online node with lowest queue count
-                    self.processing_node = ProcessingNode.find_best_available_node()
+                    self.processing_node = ProcessingNode.find_best_available_node(self.project.owner)
                     if self.processing_node:
                         self.processing_node.queue_count += 1 # Doesn't have to be accurate, it will get overridden later
                         self.processing_node.save()
@@ -789,6 +817,14 @@ class Task(models.Model):
                     self.delete()
 
                     # Stop right here!
+                    return
+                
+                elif self.pending_action == pending_actions.COMPACT:
+                    logger.info("Compacting {}".format(self))
+                    time.sleep(2) # Purely to make sure the user sees the "compacting..." message in the UI since this is so fast
+                    self.compact()
+                    self.pending_action = None
+                    self.save()
                     return
 
             if self.processing_node:
@@ -964,6 +1000,7 @@ class Task(models.Model):
 
         if is_backup:
             self.read_backup_file()
+            self.import_url = ""
         else:
             self.console += gettext("Done!") + "\n"
         
@@ -1004,6 +1041,7 @@ class Task(models.Model):
                     'name': self.name,
                     'project': self.project.id,
                     'public': self.public,
+                    'public_edit': self.public_edit,
                     'camera_shots': camera_shots,
                     'ground_control_points': ground_control_points,
                     'epsg': self.epsg,
@@ -1021,6 +1059,7 @@ class Task(models.Model):
             'project': self.project.id,
             'available_assets': self.available_assets,
             'public': self.public,
+            'public_edit': self.public_edit,
             'epsg': self.epsg
         }
 
@@ -1101,7 +1140,6 @@ class Task(models.Model):
         self.orthophoto_bands = bands
         if commit: self.save()
 
-
     def delete(self, using=None, keep_parents=False):
         task_id = self.id
         from app.plugins import signals as plugin_signals
@@ -1122,6 +1160,29 @@ class Task(models.Model):
 
         plugin_signals.task_removed.send_robust(sender=self.__class__, task_id=task_id)
 
+    def compact(self):
+        # Remove all images
+        images_path = self.task_path()
+        images = [os.path.join(images_path, i) for i in self.scan_images()]
+        for im in images:
+            try:
+                os.unlink(im)
+            except Exception as e:
+                logger.warning(e)
+
+        self.compacted = True
+        self.update_size(commit=True)
+
+    def check_public_edit(self):
+        """
+        Returns whether we need to check change permissions on this task
+        during an API call that needs to make edits
+        """
+        public = self.public or self.project.public
+        public_edit = self.public_edit or self.project.public_edit
+
+        return (not public) or (public and not public_edit)
+
     def set_failure(self, error_message):
         logger.error("FAILURE FOR {}: {}".format(self, error_message))
         self.last_error = error_message
@@ -1137,7 +1198,8 @@ class Task(models.Model):
     def check_if_canceled(self):
         # Check if task has been canceled/removed
         if Task.objects.only("pending_action").get(pk=self.id).pending_action in [pending_actions.CANCEL,
-                                                                                  pending_actions.REMOVE]:
+                                                                                  pending_actions.REMOVE,
+                                                                                  pending_actions.COMPACT]:
             raise TaskInterruptedException()
 
     def resize_images(self):
@@ -1230,7 +1292,31 @@ class Task(models.Model):
     def get_image_path(self, filename):
         p = self.task_path(filename)
         return path_traversal_check(p, self.task_path())
+
+    def set_alignment_file_from(self, align_task):
+        tp = self.task_path()
+        if not os.path.exists(tp):
+            os.makedirs(tp, exist_ok=True)
+
+        alignment_file = align_task.assets_path(self.ASSETS_MAP['georeferenced_model.laz'])
+        dst_file = self.task_path("align.laz")
+
+        if os.path.exists(dst_file):
+            os.unlink(dst_file)
+
+        if os.path.exists(alignment_file):
+            try:
+                os.link(alignment_file, dst_file)
+            except:
+                shutil.copy(alignment_file, dst_file)
+        else:
+            logger.warn("Cannot set alignment file for {}, {} does not exist".format(self, alignment_file))
     
+    def get_check_file_asset_path(self, asset):
+        file = self.assets_path(self.ASSETS_MAP[asset])
+        if isinstance(file, str) and os.path.isfile(file):
+            return file
+
     def handle_images_upload(self, files):
         uploaded = {}
         for file in files:

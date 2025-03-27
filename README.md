@@ -1,6 +1,6 @@
 <img alt="WebODM" src="https://user-images.githubusercontent.com/1951843/34074943-8f057c3c-e287-11e7-924d-3ccafa60c43a.png" width="180">
 
-![Build Status](https://img.shields.io/github/actions/workflow/status/OpenDroneMap/WebODM/build-and-publish.yml?branch=master) ![Version](https://img.shields.io/github/v/release/OpenDroneMap/WebODM) [![Translated](https://hosted.weblate.org/widgets/webodm/-/svg-badge.svg)](https://hosted.weblate.org/engage/webodm/)
+![Build Status](https://img.shields.io/github/actions/workflow/status/OpenDroneMap/WebODM/build-and-publish.yml?branch=master) ![Version](https://img.shields.io/github/v/release/OpenDroneMap/WebODM) [![Translated](https://hosted.weblate.org/widgets/webodm/-/svg-badge.svg)](https://hosted.weblate.org/engage/webodm/) [![Download](https://img.shields.io/badge/Download-%E2%86%93-pink)](#getting-started) [![Purchase](https://img.shields.io/badge/Purchase-%F0%9F%9B%92-white)](https://opendronemap.org/webodm/download/)
 
 A user-friendly, commercial grade software for drone image processing. Generate georeferenced maps, point clouds, elevation models and textured 3D models from aerial images. It supports multiple engines for processing, currently [ODM](https://github.com/OpenDroneMap/ODM) and [MicMac](https://github.com/OpenDroneMap/NodeMICMAC/).
 
@@ -54,12 +54,11 @@ To run a standalone installation of WebODM (the user interface), including the p
 * 100 GB free disk space
 * 16 GB RAM
 
-Don't expect to process more than a few hundred images with these specifications. To process larger datasets, add more RAM linearly to the number of images you want to process. A CPU with more cores will speed up processing, but can increase memory usage. GPU acceleration is also supported. To make use of your CUDA-compatible graphics card, make sure to pass `--gpu` when starting WebODM. You need the nvidia-docker installed in this case, see https://github.com/NVIDIA/nvidia-docker and https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html#docker for information on docker/NVIDIA setup.
+Don't expect to process more than a few hundred images with these specifications. To process larger datasets, add more RAM linearly to the number of images you want to process. A CPU with more cores will speed up processing, but can increase memory usage. GPU acceleration is also supported on Linux and WSL. To make use of your CUDA-compatible graphics card, make sure to pass `--gpu` when starting WebODM. You need the nvidia-docker installed in this case, see https://github.com/NVIDIA/nvidia-docker and https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html#docker for information on docker/NVIDIA setup.
 
 WebODM runs best on Linux, but works well on Windows and Mac too. If you are technically inclined, you can get WebODM to run natively on all three platforms.
 
 WebODM by itself is just a user interface (see [below](#odm-nodeodm-webodm-what)) and does not require many resources. WebODM can be loaded on a machine with just 1 or 2 GB of RAM and work fine without NodeODM. You can then use a processing service such as the [lightning network](https://webodm.net) or run NodeODM on a separate, more powerful machine.
-
 
 ## Manual installation (Docker)
 To install WebODM manually on your machine with docker:
@@ -67,9 +66,6 @@ To install WebODM manually on your machine with docker:
 ### Requirements
   - [Git](https://git-scm.com/downloads)
   - [Docker](https://www.docker.com/)
-  - [Docker-compose](https://docs.docker.com/compose/install/)
-  - Python
-  - Pip
 
 * Windows users should install [Docker Desktop](https://hub.docker.com/editions/community/docker-ce-desktop-windows) and :
     1. make sure Linux containers are enabled (Switch to Linux Containers...)
@@ -77,9 +73,11 @@ To install WebODM manually on your machine with docker:
     2.  give Docker enough CPUs (default 2) and RAM (>4Gb, 16Gb better but leave some for Windows) by going to Settings -- Advanced
 
     3.  select where on your hard drive you want virtual hard drives to reside (Settings -- Advanced -- Images & Volumes).
+    
+    4.  If you want to run the processing component (NodeODM) with GPU acceleration, install [WSL](https://learn.microsoft.com/windows/wsl/) and [set up GPU acceleration](https://learn.microsoft.com/windows/wsl/tutorials/gpu-compute). It's supported on Windows 11 or Windows 10, version 21H2 or higher.
 
 ### Installation with Docker
-* From the Docker Quickstart Terminal or Git Bash (Windows), or from the command line (Mac / Linux), type:
+* From the Docker Quickstart Terminal or Git Bash (Windows), or from the command line (Mac / Linux / WSL), type:
 ```bash
 git clone https://github.com/OpenDroneMap/WebODM --config core.autocrlf=input --depth 1
 cd WebODM
@@ -129,6 +127,18 @@ If you don't need the default "node-odm-1" node, simply pass `--default-nodes 0`
 
 Then from the web interface simply manually remove the "node-odm-1" node.
 
+## Distributed Installation Using NAS (Qnap)
+If you use lightning or another processor node the requirements for WebODM are low enough for it to run on a fairly low power device such as a NAS. Testing has been done on a Qnap-TS264 with 32Gb of RAM (Celeron  N5095 processor)
+To install WebODM on a Qnap NAS:-
+1) Enable ssh access to the NAS in control panel
+2) Install git. This might be easily achieved using the [qgit qkpg](https://www.myqnap.org/product/qgit/)
+3) Now follow the “Installation with Docker” instructions above.
+4) A new "webodm" application should appear in container station along with four individual containers for the app.
+5) Webodm should be available at port 8000 of the NAS.
+6) Setup a lightning account online and configure it within "processing nodes". It's also possible to setup a more powerful computer to run processing tasks instead of lightning.
+   
+This method of working may be useful if using the WebODM Lightning PAYG model as it offers somewhere to host your models outwith the three day window offered as part of PAYG
+
 ### Enable MicMac
 
 WebODM can use [MicMac](https://github.com/OpenDroneMap/micmac) as a processing engine via [NodeMICMAC](https://github.com/OpenDroneMap/NodeMICMAC/). To add MicMac, simply run:
@@ -175,7 +185,7 @@ Note that existing task results will not be available after the change. Refer to
 
 Symptoms | Possible Solutions
 --------- | ------------------
-Run out of memory |  Make sure that your Docker environment has enough RAM allocated: [MacOS Instructions](http://stackoverflow.com/a/39720010), [Windows Instructions](https://docs.docker.com/docker-for-windows/#advanced)
+Run out of memory |  Make sure that your Docker environment has enough RAM allocated: [MacOS Instructions](http://stackoverflow.com/a/39720010), [Windows Instructions](https://docs.docker.com/desktop/settings/windows/#advanced)
 While starting WebODM you get: `'WaitNamedPipe','The system cannot find the file specified.'` | 1. Make sure you have enabled VT-x virtualization in the BIOS.<br/>2. Try to downgrade your version of Python to 2.7
 On Windows, docker-compose fails with `Failed to execute the script docker-compose` | Make sure you have enabled VT-x virtualization in the BIOS
 Cannot access WebODM using Microsoft Edge on Windows 10 | Try to tweak your internet properties according to [these instructions](http://www.hanselman.com/blog/FixedMicrosoftEdgeCantSeeOrOpenVirtualBoxhostedLocalWebSites.aspx)
@@ -183,6 +193,7 @@ Getting a `No space left on device` error, but hard drive has enough space left 
 Cannot start WebODM via `./webodm.sh start`, error messages are different at each retry | You could be running out of memory. Make sure you have enough RAM available. 2GB should be the recommended minimum, unless you know what you are doing
 While running WebODM with Docker Toolbox (VirtualBox) you cannot access WebODM from another computer in the same network. | As Administrator, run `cmd.exe` and then type `"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" controlvm "default" natpf1 "rule-name,tcp,,8000,,8000"`
 On Windows, the storage space shown on the WebODM diagnostic page is not the same as what is actually set in Docker's settings. | From Hyper-V Manager, right-click “DockerDesktopVM”, go to Edit Disk, then choose to expand the disk and match the maximum size to the settings specified in the docker settings. Upon making the changes, restart docker.
+On Linux or WSL, Warning: `GPU use was requested, but no GPU has been found` | Run `nvidia-smi` (natively) or `docker run --rm --gpus all nvidia/cuda:11.2.2-devel-ubuntu20.04 nvidia-smi` (docker) to check with [NVIDIA driver](https://www.nvidia.com/drivers/unix/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 #### Images Missing from Lightning Assets
 
